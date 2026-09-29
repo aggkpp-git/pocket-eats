@@ -247,7 +247,7 @@ st.markdown(
     <div class="hero">
         <h1>🍜 Pocket Eats</h1>
         <div class="muted">
-            Perth · 私人口袋餐廳
+            Perth · 私人口袋餐廳 · V1.3.1
         </div>
     </div>
     """,

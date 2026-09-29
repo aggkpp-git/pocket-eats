@@ -64,43 +64,51 @@ def menu_items(r):
 
 def search_perth_restaurants(name):
     """
-    Search restaurants around the Perth metro area.
-    Geoapify Places API:
-    - catering.restaurant
-    - name search
-    - Perth metro bounding box
+    Search for a named venue/restaurant in the Perth metro area
+    using Geoapify Forward Geocoding.
     """
 
     api_key = st.secrets["GEOAPIFY_KEY"]
 
-    params = {
-        "categories": "catering.restaurant",
-        "name": name.strip(),
+    # Free-form search works better for known restaurant/place names.
+    search_text = f"{name.strip()}, Perth, Western Australia, Australia"
 
-        # Approx Perth metropolitan area
-        # lon1,lat1,lon2,lat2
+    params = {
+        "text": search_text,
+
+        # Look primarily for named amenities / venues
+        "type": "amenity",
+
+        # Perth metro area
         "filter": "rect:115.60,-32.55,116.20,-31.55",
 
+        # Prefer central Perth when several matches exist
         "bias": "proximity:115.8613,-31.9523",
+
         "limit": "10",
         "lang": "en",
+        "format": "json",
         "apiKey": api_key,
     }
 
     url = (
-        "https://api.geoapify.com/v2/places?"
+        "https://api.geoapify.com/v1/geocode/search?"
         + urllib.parse.urlencode(params)
     )
 
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Pocket-Eats/1.3"
+            "User-Agent": "Pocket-Eats/1.3.1"
         }
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(
+            req,
+            timeout=15
+        ) as response:
+
             data = json.loads(
                 response.read().decode("utf-8")
             )
@@ -117,22 +125,19 @@ def search_perth_restaurants(name):
 
     results = []
 
-    for feature in data.get("features", []):
-        p = feature.get("properties", {})
+    # format=json returns results[] rather than features[]
+    for p in data.get("results", []):
 
         restaurant_name = (
             p.get("name")
             or p.get("address_line1")
-            or "Unnamed restaurant"
+            or name.strip()
         )
 
         address = (
             p.get("formatted")
-            or p.get("address_line2")
             or ""
         )
-
-        website = p.get("website") or ""
 
         suburb = (
             p.get("suburb")
@@ -141,9 +146,21 @@ def search_perth_restaurants(name):
             or ""
         )
 
-        postcode = p.get("postcode") or ""
+        postcode = (
+            p.get("postcode")
+            or ""
+        )
 
-        place_id = p.get("place_id") or ""
+        place_id = (
+            p.get("place_id")
+            or ""
+        )
+
+        # Some Geoapify results may contain contact information.
+        website = (
+            p.get("website")
+            or ""
+        )
 
         results.append({
             "name": restaurant_name,
@@ -155,6 +172,8 @@ def search_perth_restaurants(name):
         })
 
     return results
+
+
 
 
 # =========================================================

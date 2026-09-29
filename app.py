@@ -1,11 +1,23 @@
 import streamlit as st
 import json
 import urllib.parse
-from datetime import date
+import urllib.request
+import urllib.error
 from supabase import create_client
 
 # =========================================================
-# Supabase
+# PAGE
+# =========================================================
+
+st.set_page_config(
+    page_title="Pocket Eats Perth",
+    page_icon="🍜",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# =========================================================
+# SUPABASE
 # =========================================================
 
 @st.cache_resource
@@ -19,7 +31,7 @@ supabase = get_supabase()
 
 
 # =========================================================
-# Database helpers
+# DATABASE
 # =========================================================
 
 def get_rows():
@@ -34,85 +46,125 @@ def get_rows():
     return result.data or []
 
 
-def seed():
-    result = (
-        supabase
-        .table("restaurants")
-        .select("id")
-        .limit(1)
-        .execute()
+def menu_items(r):
+    menu = r.get("menu_json") or []
+
+    if isinstance(menu, str):
+        try:
+            menu = json.loads(menu)
+        except Exception:
+            return []
+
+    return menu if isinstance(menu, list) else []
+
+
+# =========================================================
+# GEOAPIFY
+# =========================================================
+
+def search_perth_restaurants(name):
+    """
+    Search restaurants around the Perth metro area.
+    Geoapify Places API:
+    - catering.restaurant
+    - name search
+    - Perth metro bounding box
+    """
+
+    api_key = st.secrets["GEOAPIFY_KEY"]
+
+    params = {
+        "categories": "catering.restaurant",
+        "name": name.strip(),
+
+        # Approx Perth metropolitan area
+        # lon1,lat1,lon2,lat2
+        "filter": "rect:115.60,-32.55,116.20,-31.55",
+
+        "bias": "proximity:115.8613,-31.9523",
+        "limit": "10",
+        "lang": "en",
+        "apiKey": api_key,
+    }
+
+    url = (
+        "https://api.geoapify.com/v2/places?"
+        + urllib.parse.urlencode(params)
     )
 
-    if result.data:
-        return
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Pocket-Eats/1.3"
+        }
+    )
 
-    menu = [
-        {
-            "cat": "Featured / 精選",
-            "en": "Katsu Chicken Curry Don",
-            "zh": "炸雞咖哩丼",
-            "price": "$26"
-        },
-        {
-            "cat": "Featured / 精選",
-            "en": "Nabeyaki Udon",
-            "zh": "鍋燒烏龍麵",
-            "price": "$30"
-        },
-        {
-            "cat": "Featured / 精選",
-            "en": "Mentaiko Caviar Udon",
-            "zh": "明太子魚子醬烏龍麵",
-            "price": "$29"
-        },
-        {
-            "cat": "Sashimi / 刺身",
-            "en": "Salmon Carpaccio",
-            "zh": "鮭魚薄切",
-            "price": "$26.90"
-        },
-        {
-            "cat": "Sashimi / 刺身",
-            "en": "Kingfish Carpaccio",
-            "zh": "鰤魚薄切",
-            "price": "$28.90"
-        },
-    ]
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
 
-    supabase.table("restaurants").insert({
-        "name": "Akari-ya Izakaya",
-        "address": "2/800 Albany Hwy, East Victoria Park WA 6101",
-        "website": "https://www.akariya.com.au/",
-        "tags": "Japanese, Izakaya, $$",
-        "price_level": "$$",
-        "menu_source": "Official website / 官方網站",
-        "menu_url": "https://www.akariya.com.au/",
-        "menu_json": menu,
-        "menu_checked": "2026-09-29",
-        "status": "Want to go",
-        "favourite": False,
-        "rating": 0,
-        "notes": ""
-    }).execute()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(
+            f"Geoapify HTTP error: {e.code}"
+        )
 
+    except Exception as e:
+        raise RuntimeError(
+            f"Restaurant search failed: {e}"
+        )
 
-seed()
+    results = []
+
+    for feature in data.get("features", []):
+        p = feature.get("properties", {})
+
+        restaurant_name = (
+            p.get("name")
+            or p.get("address_line1")
+            or "Unnamed restaurant"
+        )
+
+        address = (
+            p.get("formatted")
+            or p.get("address_line2")
+            or ""
+        )
+
+        website = p.get("website") or ""
+
+        suburb = (
+            p.get("suburb")
+            or p.get("district")
+            or p.get("city")
+            or ""
+        )
+
+        postcode = p.get("postcode") or ""
+
+        place_id = p.get("place_id") or ""
+
+        results.append({
+            "name": restaurant_name,
+            "address": address,
+            "website": website,
+            "suburb": suburb,
+            "postcode": postcode,
+            "place_id": place_id,
+        })
+
+    return results
 
 
 # =========================================================
-# Page
+# STYLE
 # =========================================================
-
-st.set_page_config(
-    page_title="Pocket Eats Perth",
-    page_icon="🍜",
-    layout="centered",
-    initial_sidebar_state="collapsed"
-)
 
 st.markdown(
     """
     <style>
+
     .block-container{
         max-width:760px;
         padding-top:1rem;
@@ -153,11 +205,6 @@ st.markdown(
         font-size:.82rem;
     }
 
-    .menuitem{
-        padding:8px 0;
-        border-bottom:1px solid rgba(127,127,127,.18);
-    }
-
     [data-testid="stRadio"] > div{
         gap:.25rem;
     }
@@ -165,16 +212,24 @@ st.markdown(
     [data-testid="stRadio"] label{
         padding:.35rem .5rem;
     }
+
     </style>
     """,
     unsafe_allow_html=True
 )
 
+
+# =========================================================
+# HEADER
+# =========================================================
+
 st.markdown(
     """
     <div class="hero">
         <h1>🍜 Pocket Eats</h1>
-        <div class="muted">Perth · 私人口袋餐廳</div>
+        <div class="muted">
+            Perth · 私人口袋餐廳
+        </div>
     </div>
     """,
     unsafe_allow_html=True
@@ -182,22 +237,37 @@ st.markdown(
 
 page = st.radio(
     "Navigation",
-    ["❤️ Pocket", "🔎 Search", "➕ Add"],
+    [
+        "❤️ Pocket",
+        "🔎 Search",
+        "➕ Add"
+    ],
     horizontal=True,
     label_visibility="collapsed"
 )
 
+
+# =========================================================
+# SESSION STATE
+# =========================================================
+
 if "selected" not in st.session_state:
     st.session_state.selected = None
 
+if "restaurant_results" not in st.session_state:
+    st.session_state.restaurant_results = []
+
+if "restaurant_query" not in st.session_state:
+    st.session_state.restaurant_query = ""
+
 
 # =========================================================
-# Restaurant detail
+# RESTAURANT DETAIL
 # =========================================================
 
 def restaurant_detail(r):
 
-    if st.button("← Back / 返回", use_container_width=False):
+    if st.button("← Back / 返回"):
         st.session_state.selected = None
         st.rerun()
 
@@ -209,16 +279,21 @@ def restaurant_detail(r):
         if t.strip()
     ]
 
-    st.markdown(
-        "".join(
-            f'<span class="pill">{t}</span>'
-            for t in tags
-        ),
-        unsafe_allow_html=True
-    )
+    if tags:
+        st.markdown(
+            "".join(
+                f'<span class="pill">{t}</span>'
+                for t in tags
+            ),
+            unsafe_allow_html=True
+        )
 
     st.write(
-        "📍 " + (r.get("address") or "Address not added")
+        "📍 "
+        + (
+            r.get("address")
+            or "Address not added"
+        )
     )
 
     maps = (
@@ -245,14 +320,16 @@ def restaurant_detail(r):
 
     st.divider()
 
-    t1, t2, t3 = st.tabs(
-        ["📋 Menu", "⭐ My notes", "ℹ️ Info"]
+    t1, t2, t3, t4 = st.tabs(
+        [
+            "📋 Menu",
+            "⭐ My notes",
+            "✏️ Edit",
+            "ℹ️ Info"
+        ]
     )
 
-    # -----------------------------------------------------
     # MENU
-    # -----------------------------------------------------
-
     with t1:
 
         lang = st.segmented_control(
@@ -261,25 +338,23 @@ def restaurant_detail(r):
             default="中英"
         )
 
-        menu = r.get("menu_json") or []
+        menu = menu_items(r)
 
-        # Compatibility in case JSON comes back as text
-        if isinstance(menu, str):
-            try:
-                menu = json.loads(menu)
-            except Exception:
-                menu = []
-
-        checked = r.get("menu_checked") or "—"
+        checked = (
+            r.get("menu_checked")
+            or "—"
+        )
 
         st.caption(
-            f"Source: {r.get('menu_source') or '—'}"
+            f"Source: "
+            f"{r.get('menu_source') or '—'}"
             f" · Checked: {checked}"
         )
 
         if not menu:
             st.warning(
-                "尚未擷取 Menu。自動擷取功能會在下一階段接上。"
+                "尚未擷取 Menu。"
+                "自動尋找官方 Menu 將在下一階段加入。"
             )
 
         cats = []
@@ -294,12 +369,10 @@ def restaurant_detail(r):
 
             st.subheader(cat)
 
-            items = [
+            for x in [
                 z for z in menu
                 if z.get("cat", "Menu") == cat
-            ]
-
-            for x in items:
+            ]:
 
                 c1, c2 = st.columns([4, 1])
 
@@ -321,18 +394,13 @@ def restaurant_detail(r):
                 c1.markdown(label)
 
                 c2.markdown(
-                    f"""
-                    <div class='price'>
-                    {x.get('price', '—')}
-                    </div>
-                    """,
+                    f"<div class='price'>"
+                    f"{x.get('price', '—')}"
+                    f"</div>",
                     unsafe_allow_html=True
                 )
 
-    # -----------------------------------------------------
     # NOTES
-    # -----------------------------------------------------
-
     with t2:
 
         statuses = [
@@ -341,7 +409,10 @@ def restaurant_detail(r):
             "Favourite"
         ]
 
-        current_status = r.get("status") or "Want to go"
+        current_status = (
+            r.get("status")
+            or "Want to go"
+        )
 
         idx = (
             statuses.index(current_status)
@@ -352,33 +423,38 @@ def restaurant_detail(r):
         status = st.selectbox(
             "Status / 狀態",
             statuses,
-            index=idx
+            index=idx,
+            key=f"status_{r['id']}"
         )
 
         rating = st.slider(
             "My rating / 我的評分",
             0,
             5,
-            int(r.get("rating") or 0)
+            int(r.get("rating") or 0),
+            key=f"rating_{r['id']}"
         )
 
         notes = st.text_area(
             "Notes / 備註",
             value=r.get("notes") or "",
-            placeholder="例如：下次想試 Omakase、停車方便…"
+            key=f"notes_{r['id']}"
         )
 
         if st.button(
             "Save / 儲存",
-            use_container_width=True
+            use_container_width=True,
+            key=f"save_notes_{r['id']}"
         ):
 
-            supabase.table("restaurants").update({
+            supabase.table(
+                "restaurants"
+            ).update({
                 "status": status,
                 "rating": rating,
                 "notes": notes,
-                "favourite": status == "Favourite",
-                "updated_at": "now()"
+                "favourite":
+                    status == "Favourite"
             }).eq(
                 "id",
                 r["id"]
@@ -387,27 +463,121 @@ def restaurant_detail(r):
             st.success("Saved")
             st.rerun()
 
-    # -----------------------------------------------------
-    # INFO
-    # -----------------------------------------------------
-
+    # EDIT
     with t3:
 
+        st.subheader("Edit restaurant")
+
+        edit_name = st.text_input(
+            "Restaurant name",
+            value=r.get("name") or "",
+            key=f"edit_name_{r['id']}"
+        )
+
+        edit_address = st.text_input(
+            "Address",
+            value=r.get("address") or "",
+            key=f"edit_address_{r['id']}"
+        )
+
+        edit_website = st.text_input(
+            "Official website",
+            value=r.get("website") or "",
+            key=f"edit_website_{r['id']}"
+        )
+
+        edit_tags = st.text_input(
+            "Tags",
+            value=r.get("tags") or "",
+            key=f"edit_tags_{r['id']}"
+        )
+
+        if st.button(
+            "💾 Save changes",
+            use_container_width=True,
+            key=f"edit_save_{r['id']}"
+        ):
+
+            if not edit_name.strip():
+
+                st.error(
+                    "Restaurant name cannot be empty."
+                )
+
+            else:
+
+                supabase.table(
+                    "restaurants"
+                ).update({
+                    "name": edit_name.strip(),
+                    "address": edit_address.strip(),
+                    "website": edit_website.strip(),
+                    "tags": edit_tags.strip()
+                }).eq(
+                    "id",
+                    r["id"]
+                ).execute()
+
+                st.success("Restaurant updated.")
+                st.rerun()
+
+        st.divider()
+
+        st.caption(
+            "Danger zone / 刪除後無法復原"
+        )
+
+        confirm_delete = st.checkbox(
+            "I understand. / 我確定要刪除",
+            key=f"delete_confirm_{r['id']}"
+        )
+
+        if st.button(
+            "🗑 Delete restaurant",
+            type="secondary",
+            use_container_width=True,
+            disabled=not confirm_delete,
+            key=f"delete_{r['id']}"
+        ):
+
+            supabase.table(
+                "restaurants"
+            ).delete().eq(
+                "id",
+                r["id"]
+            ).execute()
+
+            st.session_state.selected = None
+
+            st.success("Restaurant deleted.")
+            st.rerun()
+
+    # INFO
+    with t4:
+
         st.write("**Address**")
-        st.write(r.get("address") or "—")
+        st.write(
+            r.get("address") or "—"
+        )
 
         st.write("**Tags**")
-        st.write(r.get("tags") or "—")
+        st.write(
+            r.get("tags") or "—"
+        )
 
         st.write("**Menu source**")
-        st.write(r.get("menu_source") or "—")
+        st.write(
+            r.get("menu_source") or "—"
+        )
 
         st.write("**Last checked**")
-        st.write(r.get("menu_checked") or "—")
+        st.write(
+            r.get("menu_checked") or "—"
+        )
 
 
 # =========================================================
-# Load restaurants
+# LOAD DATA
 # =========================================================
 
 try:
@@ -416,16 +586,15 @@ try:
 except Exception as e:
 
     st.error(
-        "Pocket Eats 無法連接 Supabase 資料庫。"
+        "Pocket Eats 無法連接 Supabase。"
     )
 
     st.code(str(e))
-
     st.stop()
 
 
 # =========================================================
-# Selected restaurant
+# SELECTED RESTAURANT
 # =========================================================
 
 if st.session_state.selected:
@@ -433,7 +602,8 @@ if st.session_state.selected:
     r = next(
         (
             x for x in rows
-            if x["id"] == st.session_state.selected
+            if x["id"]
+            == st.session_state.selected
         ),
         None
     )
@@ -443,10 +613,13 @@ if st.session_state.selected:
 
 
 # =========================================================
-# Pocket / Search
+# POCKET / SEARCH
 # =========================================================
 
-elif page in ["❤️ Pocket", "🔎 Search"]:
+elif page in [
+    "❤️ Pocket",
+    "🔎 Search"
+]:
 
     q = ""
 
@@ -476,13 +649,7 @@ elif page in ["❤️ Pocket", "🔎 Search"]:
 
     for r in rows:
 
-        menu = r.get("menu_json") or []
-
-        if isinstance(menu, str):
-            try:
-                menu = json.loads(menu)
-            except Exception:
-                menu = []
+        menu = menu_items(r)
 
         hay = " ".join(
             [
@@ -517,29 +684,36 @@ elif page in ["❤️ Pocket", "🔎 Search"]:
 
             st.subheader(r["name"])
 
-            caption = r.get("status") or "Want to go"
+            caption = (
+                r.get("status")
+                or "Want to go"
+            )
 
             if r.get("rating"):
                 caption += (
                     " · "
-                    + "★" * int(r["rating"])
+                    + "★"
+                    * int(r["rating"])
                 )
 
             st.caption(caption)
 
             tags = [
                 t.strip()
-                for t in (r.get("tags") or "").split(",")
+                for t in (
+                    r.get("tags") or ""
+                ).split(",")
                 if t.strip()
             ]
 
-            st.markdown(
-                "".join(
-                    f'<span class="pill">{t}</span>'
-                    for t in tags
-                ),
-                unsafe_allow_html=True
-            )
+            if tags:
+                st.markdown(
+                    "".join(
+                        f'<span class="pill">{t}</span>'
+                        for t in tags
+                    ),
+                    unsafe_allow_html=True
+                )
 
             st.write(
                 "📍 "
@@ -551,7 +725,7 @@ elif page in ["❤️ Pocket", "🔎 Search"]:
 
             if st.button(
                 "Open restaurant / 查看餐廳",
-                key=f"open{r['id']}",
+                key=f"open_{r['id']}",
                 use_container_width=True
             ):
 
@@ -559,99 +733,294 @@ elif page in ["❤️ Pocket", "🔎 Search"]:
                 st.rerun()
 
     if not shown:
-        st.info("沒有符合的口袋餐廳。")
+        st.info(
+            "沒有符合的口袋餐廳。"
+        )
 
 
 # =========================================================
-# Add restaurant
+# ADD / SEARCH PERTH
 # =========================================================
 
 elif page == "➕ Add":
 
-    st.subheader("➕ Add restaurant")
-
-    st.caption(
-        "V1.2 已使用永久雲端資料庫。"
-        "下一階段會把這裡改成「只輸入名稱，"
-        "自動找官方資料與 Menu」。"
+    st.subheader(
+        "➕ Find a restaurant"
     )
 
-    with st.form("add"):
+    st.caption(
+        "輸入餐廳名稱，Pocket Eats "
+        "會搜尋 Perth 的真實餐廳。"
+    )
 
-        name = st.text_input(
-            "Restaurant name *",
-            placeholder="例如 Nobu Perth"
-        )
+    search_name = st.text_input(
+        "Restaurant name",
+        placeholder="例如 Nobu"
+    )
 
-        address = st.text_input(
-            "Address"
-        )
+    if st.button(
+        "🔎 Search Perth",
+        use_container_width=True
+    ):
 
-        website = st.text_input(
-            "Official website"
-        )
+        if not search_name.strip():
 
-        tags = st.text_input(
-            "Tags",
-            placeholder=(
-                "Japanese, High-end, Date night"
+            st.warning(
+                "請先輸入餐廳名稱。"
             )
-        )
 
-        status = st.selectbox(
-            "Status",
-            [
-                "Want to go",
-                "Been there",
-                "Favourite"
-            ]
-        )
+        else:
 
-        ok = st.form_submit_button(
-            "＋ Add to Pocket",
-            use_container_width=True
-        )
+            with st.spinner(
+                "Searching Perth restaurants..."
+            ):
 
-        if ok:
+                try:
 
-            if not name.strip():
-
-                st.error(
-                    "請輸入餐廳名稱。"
-                )
-
-            else:
-
-                result = (
-                    supabase
-                    .table("restaurants")
-                    .insert({
-                        "name": name.strip(),
-                        "address": address.strip(),
-                        "website": website.strip(),
-                        "tags": tags.strip(),
-                        "menu_source":
-                            "Not checked yet / 尚未檢查",
-                        "menu_json": [],
-                        "status": status,
-                        "favourite":
-                            status == "Favourite",
-                        "rating": 0,
-                        "notes": ""
-                    })
-                    .execute()
-                )
-
-                if result.data:
-
-                    st.session_state.selected = (
-                        result.data[0]["id"]
+                    results = (
+                        search_perth_restaurants(
+                            search_name
+                        )
                     )
 
-                    st.rerun()
+                    st.session_state.restaurant_results = (
+                        results
+                    )
+
+                    st.session_state.restaurant_query = (
+                        search_name
+                    )
+
+                except Exception as e:
+
+                    st.session_state.restaurant_results = []
+
+                    st.error(
+                        "Geoapify 搜尋失敗。"
+                    )
+
+                    st.code(str(e))
+
+    results = (
+        st.session_state.restaurant_results
+    )
+
+    if results:
+
+        st.success(
+            f"找到 {len(results)} 個結果"
+        )
+
+        for i, item in enumerate(results):
+
+            with st.container(border=True):
+
+                st.subheader(
+                    item["name"]
+                )
+
+                if item["address"]:
+                    st.write(
+                        "📍 " + item["address"]
+                    )
+
+                if item["suburb"]:
+                    st.caption(
+                        item["suburb"]
+                    )
+
+                if item["website"]:
+                    st.write(
+                        "🌐 Official website found"
+                    )
+
+                if st.button(
+                    "＋ Add this restaurant",
+                    key=f"add_result_{i}",
+                    use_container_width=True
+                ):
+
+                    # Prevent simple duplicate
+                    duplicate = next(
+                        (
+                            x for x in rows
+                            if (
+                                x.get("name", "")
+                                .strip()
+                                .lower()
+                                ==
+                                item["name"]
+                                .strip()
+                                .lower()
+                            )
+                            and (
+                                x.get("address", "")
+                                .strip()
+                                .lower()
+                                ==
+                                item["address"]
+                                .strip()
+                                .lower()
+                            )
+                        ),
+                        None
+                    )
+
+                    if duplicate:
+
+                        st.warning(
+                            "這間餐廳已經在 Pocket 裡。"
+                        )
+
+                    else:
+
+                        result = (
+                            supabase
+                            .table("restaurants")
+                            .insert({
+                                "name":
+                                    item["name"],
+
+                                "address":
+                                    item["address"],
+
+                                "website":
+                                    item["website"],
+
+                                "tags":
+                                    "Restaurant",
+
+                                "menu_source":
+                                    "Not checked yet / 尚未檢查",
+
+                                "menu_json":
+                                    [],
+
+                                "status":
+                                    "Want to go",
+
+                                "favourite":
+                                    False,
+
+                                "rating":
+                                    0,
+
+                                "notes":
+                                    ""
+                            })
+                            .execute()
+                        )
+
+                        if result.data:
+
+                            st.session_state.selected = (
+                                result.data[0]["id"]
+                            )
+
+                            st.session_state.restaurant_results = []
+
+                            st.rerun()
+
+    elif st.session_state.restaurant_query:
+
+        st.info(
+            "沒有找到符合的 Perth 餐廳。"
+        )
+
+    st.divider()
+
+    with st.expander(
+        "Can't find it? / 找不到餐廳？手動新增"
+    ):
+
+        with st.form(
+            "manual_add"
+        ):
+
+            manual_name = st.text_input(
+                "Restaurant name *"
+            )
+
+            manual_address = st.text_input(
+                "Address"
+            )
+
+            manual_website = st.text_input(
+                "Official website"
+            )
+
+            manual_tags = st.text_input(
+                "Tags"
+            )
+
+            manual_status = st.selectbox(
+                "Status",
+                [
+                    "Want to go",
+                    "Been there",
+                    "Favourite"
+                ]
+            )
+
+            manual_ok = (
+                st.form_submit_button(
+                    "＋ Add manually",
+                    use_container_width=True
+                )
+            )
+
+            if manual_ok:
+
+                if not manual_name.strip():
+
+                    st.error(
+                        "請輸入餐廳名稱。"
+                    )
 
                 else:
 
-                    st.error(
-                        "餐廳沒有成功加入，請再試一次。"
+                    result = (
+                        supabase
+                        .table("restaurants")
+                        .insert({
+                            "name":
+                                manual_name.strip(),
+
+                            "address":
+                                manual_address.strip(),
+
+                            "website":
+                                manual_website.strip(),
+
+                            "tags":
+                                manual_tags.strip(),
+
+                            "menu_source":
+                                "Not checked yet / 尚未檢查",
+
+                            "menu_json":
+                                [],
+
+                            "status":
+                                manual_status,
+
+                            "favourite":
+                                manual_status
+                                == "Favourite",
+
+                            "rating":
+                                0,
+
+                            "notes":
+                                ""
+                        })
+                        .execute()
                     )
+
+                    if result.data:
+
+                        st.session_state.selected = (
+                            result.data[0]["id"]
+                        )
+
+                        st.rerun()
